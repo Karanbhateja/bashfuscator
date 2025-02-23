@@ -19,15 +19,7 @@ if [ $# -ne 1 ]; then
 fi
 
 # Generate multi-layer obfuscation
-OBFUSCATED_CONTENT=$(
-    gzip -9 -c "$1" | \
-    openssl enc -aes-256-ctr -pass pass:"$ENCRYPTION_KEY" -md sha512 | \
-    base64 -w 0 | \
-    xxd -p -c 256 | \
-    rev | \
-    base58 | \
-    sed 's/./&\n/g' | tac | paste -sd ''
-)
+OBFUSCATED_CONTENT=$(gzip -9 -c "$1" | openssl enc -aes-256-ctr -pbkdf2 -iter 100000 -pass pass:"$ENCRYPTION_KEY" -md sha512 | base64 -w 0 | xxd -p -c 256 | rev | base58 | sed 's/./&\n/g' | tac | paste -sd '')
 
 # Build protected script
 cat << EOF > temp_script.sh
@@ -50,13 +42,7 @@ ${LAYER2_VAR}="\$(tr -d '\n' <<< "\$${LAYER1_VAR}")"
 # Dynamic decoder
 ${DECODE_FUNC}() {
     local _d="\$${LAYER2_VAR}"
-    _d=\$(echo "\$_d" | \\
-        rev | \\
-        base58 -d | \\
-        xxd -r -p | \\
-        base64 -d | \\
-        openssl enc -aes-256-ctr -d -pass pass:"$ENCRYPTION_KEY" | \\
-        gzip -d)
+    _d=\$(echo "\$_d" | rev | base58 -d | xxd -r -p | base64 -d | openssl enc -aes-256-ctr -d -pbkdf2 -iter 100000 -pass pass:"$ENCRYPTION_KEY" -md sha512 | gzip -d)
     eval "\$_d"
 }
 
@@ -65,17 +51,13 @@ trap 'rm -- "\$0"; exit 255' SIGINT SIGTERM
 ${DECODE_FUNC}
 EOF
 
-# Compile with SHC using strict flags
-shc -f temp_script.sh -o "$1.bin" -H \
-    -e "31 Dec 2024" \
-    -m "This binary has expired" \
-    -r
+# Compile with SHC using valid expiration format
+shc -f temp_script.sh -o "$1.bin" -H -e 31/12/2024 -m "This binary has expired" -r
 
 # Strip debug symbols and pack
 strip "$1.bin" 2>/dev/null
 upx --ultra-brute "$1.bin" >/dev/null 2>&1
 
-# Cleanup
+# Cleanup and verification
 rm -f temp_script.sh temp_script.sh.x.c
-
-echo "Secure binary generated: $1.bin"
+[ -f "$1.bin" ] && echo "Secure binary generated: $1.bin" || echo "Compilation failed!"
