@@ -1,42 +1,81 @@
 #!/bin/bash
 
-# Safer random name generator (letters only)
-RAND_VAR() { 
-    cat /dev/urandom | tr -dc 'a-zA-Z' | fold -w 12 | head -n 1 | grep -E '^[a-z]' || RAND_VAR
+# Secure random name generator (Bash 4+ required)
+RAND_VAR() {
+    LC_ALL=C tr -dc 'a-zA-Z' </dev/urandom | fold -w 16 | head -n 1
 }
 
-# Generate compatible components
-ENCRYPTION_KEY=$(openssl rand -hex 16)
-VAR1=$(RAND_VAR)
-VAR2=$(RAND_VAR)
-VAR3=$(RAND_VAR)
+# Generate unique components per run
+ENCRYPTION_KEY=$(openssl rand -hex 32)
+LAYER1_VAR=$(RAND_VAR)
+LAYER2_VAR=$(RAND_VAR)
+DECODE_FUNC=$(RAND_VAR)
+JUNK_CALL=$(RAND_VAR)
 
-# Add Bash version check
-{
-    echo '#!/usr/bin/env bash'
-    echo '(( BASH_VERSINFO[0] < 4 )) && echo "Requires Bash 4+" && exit 1'
-    
-    # Modified array declaration
-    echo "declare -A ${VAR1}=()"
-    echo "${VAR1}[${VAR2}]=\"$(gzip -c $1 | openssl enc -base64 -A)\""
-    
-    # Simplified decoder
-    echo "eval \"\$(echo -n \${${VAR1}[${VAR2}]} | base64 -d | openssl enc -d -base64 | gunzip)\""
-    
-} > obfuscated_script.sh
-
-# Test before compilation
-if ! bash -n obfuscated_script.sh; then
-    echo "Syntax error in generated script!"
+# Validate input
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <script.sh>"
     exit 1
 fi
 
-# Compile with SHC
-shc -f obfuscated_script.sh -o output.bin
+# Generate multi-layer obfuscation
+OBFUSCATED_CONTENT=$(
+    gzip -9 -c "$1" | \
+    openssl enc -aes-256-ctr -pass pass:"$ENCRYPTION_KEY" -md sha512 | \
+    base64 -w 0 | \
+    xxd -p -c 256 | \
+    rev | \
+    base58 | \
+    sed 's/./&\n/g' | tac | paste -sd ''
+)
 
-# Verify binary
-if [ -f output.bin ]; then
-    echo "Success! Test with: ./output.bin"
-else
-    echo "Compilation failed!"
-fi
+# Build protected script
+cat << EOF > temp_script.sh
+#!/bin/bash
+
+# Anti-version check
+[[ \$- == *i* ]] && echo "Interactive shells disabled" >&2 && exit 1
+
+# Random garbage
+$(RAND_VAR)() { 
+    for _ in {1..$((RANDOM%50+10))}; do 
+        echo \$RANDOM > /dev/null
+    done
+}
+
+# Encrypted payload (split)
+${LAYER1_VAR}='$(echo "$OBFUSCATED_CONTENT" | fold -w 64)'
+${LAYER2_VAR}="\$(tr -d '\n' <<< "\$${LAYER1_VAR}")"
+
+# Dynamic decoder
+${DECODE_FUNC}() {
+    local _d="\$${LAYER2_VAR}"
+    _d=\$(echo "\$_d" | \\
+        rev | \\
+        base58 -d | \\
+        xxd -r -p | \\
+        base64 -d | \\
+        openssl enc -aes-256-ctr -d -pass pass:"$ENCRYPTION_KEY" | \\
+        gzip -d)
+    eval "\$_d"
+}
+
+# Anti-tampering
+trap 'rm -- "\$0"; exit 255' SIGINT SIGTERM
+${DECODE_FUNC}
+EOF
+
+# Compile with SHC using strict flags
+shc -f temp_script.sh -o "$1.bin" -H \
+    -e "31 Dec 2024" \
+    -m "This binary has expired" \
+    -r
+
+# Strip debug symbols and pack
+strip "$1.bin" 2>/dev/null
+upx --ultra-brute "$1.bin" >/dev/null 2>&1
+
+# Cleanup
+rm -f temp_script.sh temp_script.sh.x.c
+
+echo "Secure binary generated: $1.bin"
