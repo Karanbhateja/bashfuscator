@@ -16,28 +16,27 @@ LAYER2_VAR=$(RAND_VAR)
 # Obfuscation pipeline
 OBFUSCATED_CONTENT=$(gzip -9 -c "$1" | openssl enc -aes-256-ctr -pbkdf2 -iter 100000 -pass pass:"$ENCRYPTION_KEY" -md sha512 | base64 -w 0 | xxd -p -c 256 | rev | base58 | sed 's/./&\n/g' | tac | paste -sd '')
 
-# Generate temp script
-cat << EOF > temp_script.sh
+# Generate temp script with POSIX-compliant syntax
+cat << 'EOF' > temp_script.sh
 #!/bin/bash
 
-# Anti-debugging
-trap 'rm -f \$0; exit 255' SIGINT SIGTRAP
+# Valid trap syntax
+trap 'rm -f "$0"; exit 255' INT TERM
 
 # Payload assembly
-${LAYER1_VAR}='$(echo "$OBFUSCATED_CONTENT" | fold -w 64)'
-${LAYER2_VAR}="\$(tr -d '\n' <<< "\$${LAYER1_VAR}")"
+%LAYER1%='%CONTENT%'
+%LAYER2%="$(tr -d '\n' <<< "$%LAYER1%")"
 
 # Decoder
-eval "\$(echo "\$${LAYER2_VAR}" | rev | base58 -d | xxd -r -p | base64 -d | openssl enc -aes-256-ctr -d -pbkdf2 -iter 100000 -pass pass:"$ENCRYPTION_KEY" -md sha512 | gzip -d)"
+eval "$(echo "$%LAYER2%" | rev | base58 -d | xxd -r -p | base64 -d | openssl enc -aes-256-ctr -d -pbkdf2 -iter 100000 -pass pass:%KEY% -md sha512 | gzip -d)"
 EOF
 
-# Compile with fixed expiration
-shc -f temp_script.sh -o "$1.bin" -H -e 12/31/2024 -m "Expired: Contact admin" -r
+# Inject variables safely
+sed -i "s/%LAYER1%/$LAYER1_VAR/g; s/%LAYER2%/$LAYER2_VAR/g; s/%KEY%/$ENCRYPTION_KEY/g; s/%CONTENT%/$(echo "$OBFUSCATED_CONTENT" | fold -w 64)/g" temp_script.sh
 
-# Security bypass
-sudo chmod +x "$1.bin"
-sudo chattr +i "$1.bin"
-sudo setcap cap_dac_override=eip "$1.bin"
+# Compile with SHC (without capabilities)
+shc -f temp_script.sh -o "$1.bin" -H -e 31/12/2024 -m "Expired" -r
+chmod +x "$1.bin"
 
 # Cleanup
 rm -f temp_script.sh temp_script.sh.x.c
